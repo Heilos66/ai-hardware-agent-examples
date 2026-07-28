@@ -12,8 +12,8 @@ static BroadcastMessage timer_msg = {0};
 
 // AW9523电源模式检测相关
 #define AW9523B_DRV_NAME "aw9523b"
-#define AW9523_P1_6 14
-#define AW9523_P1_5 13
+#define AW9523_P1_6 14  
+#define AW9523_P1_5 13   
 
 // 电源模式枚举
 typedef enum {
@@ -37,8 +37,8 @@ static SdCardService *sdcard_service = NULL;
 static int wakeup_ai_flag = 0;
 static int wakeup_walkie_talkie_flag = 0;
 
-struct tm last_time;
-struct tm current_time;
+struct tm last_time; 
+struct tm current_time; 
 
 NTPService* mntp_service =NULL;
 static int time_sync_flag = -1;
@@ -77,7 +77,7 @@ static App_t* chatbox_app = NULL;
 static App_t* animationplayer_app = NULL;
 
 static void wait_for_drvs(void){
-	wait_drv(DISP_DRV_INDEX);
+	wait_drv(DISP_DRV_INDEX);	
 #ifdef PLATFORM_TYPE_WS63
 	wait_drv(FATFS_DISK_DRV_INDEX);
 #endif
@@ -129,7 +129,7 @@ static void register_key_event(void)
 	if(evt_service != NULL)
 	{
 		evt_service->register_keyevt_cb(EVENT_KEY_CODE_WAKEUP_AIATLK,priv_KeyEventHandler);
-		evt_service->register_keyevt_cb(EVENT_KEY_CODE_SLE_WTP_EVENT,priv_KeyEventHandler);
+		evt_service->register_keyevt_cb(EVENT_KEY_CODE_SLE_WTP_EVENT,priv_KeyEventHandler);	
 	}
 
 }
@@ -157,7 +157,7 @@ int is_time_changed(struct tm* last,struct tm* current)
 static PowerMode detect_power_mode(void)
 {
     PowerMode mode = POWER_MODE_NORMAL;
-
+    
 #ifdef DRV_CORE
     printf("[Power Mode] Detecting power mode via AW9523 P1_5...\n");
     if (AW9523B_fd >= 0) {
@@ -181,7 +181,7 @@ static PowerMode detect_power_mode(void)
         printf("[Power Mode] ERROR: Failed to open AW9523 device\n");
     }
 #endif
-
+    
     return mode;
 }
 
@@ -192,11 +192,11 @@ static void handle_power_mode(PowerMode mode)
 	aw9523b_ioctl_arg_t ioctl_arg;
     if (AW9523B_fd >= 0) {
         aw9523b_ioctl_arg_t ioctl_arg;
-
+ 
         ioctl_arg.io_index = AW9523_P1_6;
         ioctl_arg.value = 1; // 输出模式
         goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_SET_DIR, &ioctl_arg);
-
+        
         // 根据电源模式设置P1_6电平
         if (mode == POWER_MODE_NORMAL) {
             // 正常开机模式：设置P1_6为低电平保持供电
@@ -221,11 +221,11 @@ static int sys_init_Task(void *param){
 	int timeout = 0;
 	int hp_status = 0;
 	int hp_status_last = 0;
-#ifdef SUPPORT_BATTERY
+#ifdef SUPPORT_BATTERY	
 	int last_power;
 	static int last_charging_status = -1;
 	int bat_check_timout =30;//上电后更新一次电量状态
-#endif
+#endif	
     param = param;
 	wait_for_drvs();
 
@@ -240,7 +240,7 @@ static int sys_init_Task(void *param){
 #ifdef SUPPORT_BATTERY
 	#ifdef DRV_CORE
 	battery_fd = goldie_open(BAT_DRV_NAME, O_RDONLY);
-	batmsg.id = EVENT_BROADCAST_POWER;
+	batmsg.id = EVENT_BROADCAST_POWER; 
 	#else
 	battery_drv = wait_drv(BATTERY_DRV_INDEX);
     	battery_drv->init();
@@ -253,6 +253,29 @@ static int sys_init_Task(void *param){
 	/* Initialize ConvAI SDK bridge with audio source */
     extern void convai_bridge_init(void);
     extern void convai_bridge_set_audio_source(void*, int, int, int);
+    extern void convai_bridge_set_device_name(const char *name);
+
+    /* Platform-specific init + device ID injection.
+     * The bridge itself is platform-agnostic; each platform registers its
+     * platform adapter and supplies a unique device ID here. */
+#if defined(PLATFORM_TYPE_WS63)
+    /* WS63 hardware: register the WS63 platform adapter, use WiFi MAC as
+     * the unique device name. */
+    extern int convai_platform_ws63_init(void);
+    extern int ws63_device_id(char *buf, size_t len);
+    convai_platform_ws63_init();
+    {
+        char dev_id[32] = {0};
+        if (ws63_device_id(dev_id, sizeof(dev_id)) > 0) {
+            convai_bridge_set_device_name(dev_id);
+        }
+    }
+#elif defined(PLATFORM_TYPE_WIN)
+    /* Desktop simulator (goldieos): no hardware platform adapter needed
+     * (the SDK falls back to stubs), use a fixed device name. */
+    convai_bridge_set_device_name("goldieos-sim");
+#endif
+
     convai_bridge_init();
     convai_bridge_set_audio_source(audio_service, 8000, 1, 16);
 
@@ -273,7 +296,7 @@ static int sys_init_Task(void *param){
 			{
 				sdcard_service->unmount_disk();
 			}
-
+			
 			#ifdef ST7789_SPI_LCD
 				// 关机充电模式：启动charging_only应用（关机充电应用）
 				printf("[System Init] Starting charging-only mode: launching charging_only app...\n");
@@ -290,13 +313,13 @@ static int sys_init_Task(void *param){
 					while(1){
 						// 读取P1_5状态
 						goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_GET_VAL, &ioctl_arg);
-						int p1_5_value = ioctl_arg.value;
+						int p1_5_value = ioctl_arg.value;				
 						// 根据P1_5电平确定电源模式
 						if (p1_5_value == 1) {
 							goldie_close(AW9523B_fd);
 							//重启
 							hal_reboot_chip();
-						}
+						} 
 						goldie_msleep(100);
 					}
 					return 0;
@@ -310,13 +333,13 @@ static int sys_init_Task(void *param){
 				while(1){
 					// 读取P1_5状态
 					goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_GET_VAL, &ioctl_arg);
-					int p1_5_value = ioctl_arg.value;
+					int p1_5_value = ioctl_arg.value;				
 					// 根据P1_5电平确定电源模式
 					if (p1_5_value == 1) {
 						goldie_close(AW9523B_fd);
 						//重启
 						hal_reboot_chip();
-					}
+					} 
 					goldie_msleep(100);
 				}
 				return 0;
@@ -336,7 +359,7 @@ static int sys_init_Task(void *param){
 		if (dualscreen_ai_app) {
 			goldie_run_app(dualscreen_ai_app);
 		}
-
+	
 #else
 	start_boot_animation();
 	alarm_service =  (AlarmService*)get_service(ALARM_SERVICE_INDEX);
@@ -356,9 +379,9 @@ static int sys_init_Task(void *param){
 	}
 	register_key_event();
 	stop_boot_animation();
-	start_launcher_app();
+	start_launcher_app();		
 #endif
-
+	
 	while(1)
 	{
 
@@ -371,7 +394,7 @@ static int sys_init_Task(void *param){
 			goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_GET_VAL, &ioctl_arg);
 			int p1_5_value = ioctl_arg.value;
 			// 如果P1_5为低电平（0），则执行关机流程
-
+			
 			 if (p1_5_value == 0) {
 				printf("[System Init] Shutdown signal detected (P1_5 low), starting shutdown process...\n");
 				#ifdef ST7789_SPI_LCD
@@ -391,7 +414,7 @@ static int sys_init_Task(void *param){
 					evt_service->send_broadcast(&shutdown_msg);
 					printf("[System Init] Shutdown broadcast sent\n");
 				}
-
+				
 				// 2. 卸载SD卡
 				if (sdcard_service && sdcard_service->IsSdCardExists()) {
 					printf("[System Init] Unmounting SD card...\n");
@@ -401,17 +424,17 @@ static int sys_init_Task(void *param){
 				goldie_msleep(1000);
 				//3. 系统断电
 				ioctl_arg.io_index = AW9523_P1_6;
-				ioctl_arg.value = 1;
+				ioctl_arg.value = 1; 
 				goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_SET_DIR, &ioctl_arg); // 先设置为输出模式
 				ioctl_arg.value = 1;
-				goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_SET_VAL, &ioctl_arg);
+				goldie_ioctl(AW9523B_fd, AW9523B_IOCTL_SET_VAL, &ioctl_arg); 
 				printf("[System Init] AW9523_P1_6 set to low, system power off\n");
-
+				
 
 				//4. 关闭电池设备
 				goldie_close(AW9523B_fd);
 				AW9523B_fd = -1;
-
+				
 				//系统进入休眠或停止状态
 				printf("[System Init] System shutdown complete\n");
 
@@ -434,7 +457,7 @@ static int sys_init_Task(void *param){
 			wakeup_walkie_talkie_flag =0;
 	    }
 		#endif
-#ifdef SUPPORT_EXT_GPIO_PA
+#ifdef SUPPORT_EXT_GPIO_PA	
 #ifdef SUPPOR_EXT_GPIO_HP_DET
 		hp_status = gpio_ext_drv->get_gpio_value(HP_DET_EXT_PIN);
 		if(hp_status_last  != hp_status)
@@ -486,7 +509,7 @@ static int sys_init_Task(void *param){
 		current_charging_status = battery_drv->is_charging();
 		#endif
 		if (current_charging_status != last_charging_status) {
-			printf("charging status changed: %d -> %d. Sending broadcast.\n",
+			printf("charging status changed: %d -> %d. Sending broadcast.\n", 
 					last_charging_status, current_charging_status);
 			evt_service->send_broadcast(&batmsg);
 			last_charging_status = current_charging_status;
@@ -494,7 +517,7 @@ static int sys_init_Task(void *param){
 	}
 #endif
         if(time_sync_flag <0){
-#ifdef PLATFORM_TYPE_WS63
+#ifdef PLATFORM_TYPE_WS63			
 		if(wifi_service->svr_sta_isConnected()){
 			time_sync_flag = mntp_service->sync_time();
 		}else{
@@ -521,15 +544,15 @@ static int sys_init_Task(void *param){
 		printf("update to  time: %04d-%02d-%02d %02d:%02d:%02d (Week%d)\r\n",
 			   current_time.tm_year+1900, current_time.tm_mon+1, current_time.tm_mday,
 			   current_time.tm_hour, current_time.tm_min, current_time.tm_sec,
-			   current_time.tm_wday);
-
+			   current_time.tm_wday);	
+		
 		timer_msg.msg = &current_time;
 		timer_msg.msg_len = sizeof(current_time);
 		memcpy(&last_time,&current_time,sizeof(current_time));
          }else{
 		timer_msg.msg_len = 0;
 	}
-
+	
 
 	timer_msg.id = EVENT_BROADCAST_TIMERUPDATE;
 	evt_service->send_broadcast(&timer_msg);
@@ -548,7 +571,7 @@ static void system_init_entry(void){
 	memset(&current_time,0,sizeof(current_time));
 	memset(&last_time,0,sizeof(last_time));
 	goldie_thread_lock();
-	task_handle = goldie_thread_create(sys_init_Task, 0, "sys_init_Task", 0x1000);
+	task_handle = goldie_thread_create(sys_init_Task, 0, "sys_init_Task", 0x2000);
 	if (task_handle != NULL) {
 		goldie_thread_set_priority(task_handle, 24);
 	}
@@ -556,5 +579,6 @@ static void system_init_entry(void){
 }
 
 GOLDIE_INIT_CALL_(system_init_entry);
+
 
 

@@ -202,30 +202,6 @@ static char current_apikey[MAX_CLOUD_APIKEY_SIZE];
 static int cloud_current_cfg_page = CLOUD_AVATAR_PAGE;
 static convai_status_e sdk_status = CONVAI_STATUS_IDLE;
 
-/* ---- 对话页动画状态 ---- */
-enum {
-    PLAY_TYPE_SILENCE = 0,
-    PLAY_TYPE_SPEAK,
-    PLAY_TYPE_SLEEP,
-};
-
-enum {
-    EMOTION_NEUTRAL = 0,
-    EMOTION_HAPPY,
-    EMOTION_ANGRY,
-    EMOTION_SAD,
-    EMOTION_DOUBT,
-};
-
-static int talk_play_type     = PLAY_TYPE_SILENCE;
-static int talk_current_emotion = EMOTION_NEUTRAL;
-static int talk_avatar_id     = 0;       /* 0=female, 1=male, synced from current_avatrid */
-
-static int talk_init_flag      = 0;      /* thread exit gate */
-static int talk_running_flag   = 0;      /* animation running gate */
-static int talk_thread_running = 0;      /* thread alive indicator */
-static Goldie_Thread *talk_thread = NULL;
-
 /* backup for rollback on convai_update failure */
 static int backup_avatrid = 0;
 static int backup_voiceid = 0;
@@ -274,12 +250,6 @@ static void show_person_setting();
 static void show_apikey_setting();
 static void cloud_status_callback(convai_status_e status);
 
-/* talk page */
-static void show_talk_page(void);
-static void hide_talk_page(void);
-static void talk_play_animation(void);
-static void talk_stop_animation(void);
-
 #if 0
 /* 音量控制函数声明 */
 static void on_player_volume_add_click(void*);
@@ -319,7 +289,28 @@ static void cloud_status_callback(convai_status_e status) {
         case CONVAI_STATUS_INTERRUPTED:
             text = "已打断"; color = 0xF800; break;
         case CONVAI_STATUS_ANSWER_FINISHED:
-            text = "回答完毕"; color = 0x0410; break;
+            text = "回答完毕"; color = 0x0410;
+            /* Print uplink (mic) + downlink (playback) drop stats for this turn.
+             * Uplink drop rate reflects upstream ASR quality; downlink overrun
+             * bytes (delta vs last turn) reflect playback feed starvations. */
+            {
+                static unsigned int last_dl_drop = 0;
+                unsigned int sent = 0, dropped = 0, dl_drop = 0;
+                if (convai_bridge_get_uplink_stats(&sent, &dropped) == 0 &&
+                    (sent + dropped) > 0) {
+                    printf("[AI Settings] uplink: sent=%u dropped=%u drop_rate=%u%%\n",
+                           sent, dropped, dropped * 100 / (sent + dropped));
+                }
+                if (convai_bridge_get_downlink_stats(&dl_drop) == 0) {
+                    unsigned int dl_delta = dl_drop - last_dl_drop;
+                    if (dl_delta > 0) {
+                        printf("[AI Settings] downlink: overrun_bytes=%u (this turn)\n",
+                               dl_delta);
+                    }
+                    last_dl_drop = dl_drop;
+                }
+            }
+            break;
         default: break;
     }
     LabelView_status_conv->setColor(color);
@@ -333,13 +324,24 @@ static void cloud_event_callback(convai_event_code_e event_type, const char *inf
     switch (event_type) {
         case CONVAI_EV_CONNECTED:
             color = 0x07E0; text = "● 已连接";
-            ButtonView_enter_talk->setVisible(true);
             break;
         case CONVAI_EV_DISCONNECTED:
         case CONVAI_EV_FAILED:
             color = 0x0000; text = "● 未连接";
-            ButtonView_enter_talk->setVisible(false);
-            talk_current_emotion = EMOTION_NEUTRAL;
+            /* Print uplink/downlink drop stats on disconnect so we can see the
+             * quality of this session just before it ended. */
+            {
+                unsigned int sent = 0, dropped = 0, dl_drop = 0;
+                if (convai_bridge_get_uplink_stats(&sent, &dropped) == 0 &&
+                    (sent + dropped) > 0) {
+                    unsigned int total = sent + dropped;
+                    printf("[AI Settings] uplink: sent=%u dropped=%u drop_rate=%u%%\n",
+                           sent, dropped, dropped * 100 / total);
+                }
+                if (convai_bridge_get_downlink_stats(&dl_drop) == 0 && dl_drop > 0) {
+                    printf("[AI Settings] downlink: dropped_bytes=%u (overrun)\n", dl_drop);
+                }
+            }
             break;
         default: return;
     }
@@ -376,19 +378,7 @@ static bool handle_emotion(const char *call_id, cJSON *args_json,
     const char *emotion = emotion_item->valuestring;
     printf("[AI Settings] EMOTION: %s\n", emotion);
 
-    if (strcmp(emotion, "neutral") == 0)
-        talk_current_emotion = EMOTION_NEUTRAL;
-    else if (strcmp(emotion, "happy") == 0)
-        talk_current_emotion = EMOTION_HAPPY;
-    else if (strcmp(emotion, "angry") == 0)
-        talk_current_emotion = EMOTION_ANGRY;
-    else if (strcmp(emotion, "sad") == 0)
-        talk_current_emotion = EMOTION_SAD;
-    else if (strcmp(emotion, "doubt") == 0)
-        talk_current_emotion = EMOTION_DOUBT;
-    else
-        talk_current_emotion = EMOTION_NEUTRAL;
-
+    /* Emotion animation removed — just log it. */
     return true;
 }
 
@@ -879,10 +869,6 @@ static void show_main_page() {
     FrameView_wifipasswd->setVisible(false);
     FrameView_sle_pair->setVisible(false);
     InputMethodView_0->setVisible(false);
-    FrameView_cloud->setVisible(false);
-    FrameView_config_wm->setVisible(false);
-    FrameView_talk->setVisible(false);
-    talk_stop_animation();
     Window_main->flush(0, 0, APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT);
     log_wifi_operation("显示主页面");
 }
@@ -1247,239 +1233,6 @@ static void on_player_volume_dec_click(void*) {
 }
 #endif
 
-/* ---- 对话页 动画函数 ---- */
-
-static void show_talk_page(void)
-{
-    /* hide config sub-panel if it was open */
-    FrameView_config_wm->setVisible(false);
-
-    /* sync avatar gender from current settings */
-    talk_avatar_id = current_avatrid;
-
-    /* show the talk page full-screen */
-    FrameView_talk->setVisible(true);
-    FrameView_cloud->setVisible(false);
-
-    Window_main->flush(0, 0, APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT);
-    printf("[Talk] talk page shown (avatar_id=%d)\n", talk_avatar_id);
-}
-
-static void hide_talk_page(void)
-{
-    FrameView_talk->setVisible(false);
-    FrameView_cloud->setVisible(true);
-
-    /* refresh avatar in case it was changed via config */
-    LabelView_pic->setImageBuffer(avatar_pic_list[current_avatrid]);
-    LabelView_avashow0->setText(avatar_list[current_avatrid], 24, 2);
-
-    Window_main->flush(0, 0, APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT);
-    printf("[Talk] talk page hidden, back to cloud page\n");
-}
-
-/* 更新对话页眼睛/领结动画
- * 从 AItalk 移植，适配 Settings 的控件命名 (LabelView_talk_*) */
-static void update_talk_avatar_ui(int play_type)
-{
-    if (!talk_init_flag) return;
-    static int count = 0;
-    static int dir = 0;
-    int temp_index = 0;
-
-    if (talk_avatar_id) { /* 男性 */
-        LabelView_talk_tie->setImageBuffer((uint16_t*)&rgb16_bowtie_56_53);
-        if (play_type == PLAY_TYPE_SLEEP) {
-            temp_index = count % 8;
-            const unsigned char* sleep_imgs[] = {
-                rgb16_closeeye_r1_88_85,
-                rgb16_closeeye_r1_88_85,
-                rgb16_closeeye_r2_88_85,
-                rgb16_closeeye_r3_88_85,
-                rgb16_closeeye_r3_88_85,
-                rgb16_closeeye_r3_88_85,
-                rgb16_closeeye_r2_88_85,
-                rgb16_closeeye_r1_88_85
-            };
-            LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_closeeye_l_88_85);
-            LabelView_talk_eyeR->setImageBuffer((uint16_t*)sleep_imgs[temp_index]);
-            count = (count + 1) % 8;
-        } else if (play_type == PLAY_TYPE_SILENCE) {
-            if (++count == 15) count = 0;
-            if (count == 2) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_half_l_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_half_r_88_85);
-            } else if (count == 3) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_closeeye_l_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_closeeye_r_88_85);
-            } else {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_eye_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_eye_88_85);
-            }
-        } else if (play_type == PLAY_TYPE_SPEAK) {
-            if (talk_current_emotion == EMOTION_NEUTRAL) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_eye_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_eye_88_85);
-            } else if (talk_current_emotion == EMOTION_HAPPY) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_laugh_l_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_laugh_r_88_85);
-                if (dir == 1) {
-                    if (++count >= 5) { count = 5; dir = 0; }
-                } else {
-                    if (--count <= 0) { count = 0; dir = 1; }
-                }
-                LabelView_talk_eyeL->setPosition(72, 66 + count * 2);
-                LabelView_talk_eyeR->setPosition(8, 66 + count * 2);
-            } else if (talk_current_emotion == EMOTION_ANGRY) {
-                if (++count >= 8) count = 0;
-                if (count > 3) {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_angry_male_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_angry_male_r2_88_85);
-                } else {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_angry_male_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_angry_male_r1_88_85);
-                }
-            } else if (talk_current_emotion == EMOTION_SAD) {
-                if (++count >= 20) count = 0;
-                if (count == 14 || count == 15 || count == 18 || count == 19) {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_closeeye_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_closeeye_r_88_85);
-                } else {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_sad_male_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_sad_male_r_88_85);
-                }
-            } else if (talk_current_emotion == EMOTION_DOUBT) {
-                if (++count >= 8) count = 0;
-                if (count > 3) {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_doubt_male_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_doubt_male_r2_88_85);
-                } else {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_doubt_male_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_doubt_male_r1_88_85);
-                }
-            }
-        }
-    } else { /* 女性 */
-        LabelView_talk_tie->setImageBuffer((uint16_t*)&rgb16_bow_56_53);
-        if (play_type == PLAY_TYPE_SLEEP) {
-            temp_index = count % 8;
-            const unsigned char* sleep_imgs[] = {
-                rgb16_closeeye_r1_new_88_85,
-                rgb16_closeeye_r1_new_88_85,
-                rgb16_closeeye_r2_new_88_85,
-                rgb16_closeeye_r3_new_88_85,
-                rgb16_closeeye_r3_new_88_85,
-                rgb16_closeeye_r3_new_88_85,
-                rgb16_closeeye_r2_new_88_85,
-                rgb16_closeeye_r1_new_88_85
-            };
-            LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_closeeye_l_new_88_85);
-            LabelView_talk_eyeR->setImageBuffer((uint16_t*)sleep_imgs[temp_index]);
-            count = (count + 1) % 8;
-        } else if (play_type == PLAY_TYPE_SILENCE) {
-            if (++count == 15) count = 0;
-            if (count == 2) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_half_l_new_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_half_r_new_88_85);
-            } else if (count == 3) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_closeeye_l_new_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_closeeye_r_new_88_85);
-            } else {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_eye_new_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_eye_new_88_85);
-            }
-        } else if (play_type == PLAY_TYPE_SPEAK) {
-            if (talk_current_emotion == EMOTION_NEUTRAL) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_eye_new_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_eye_new_88_85);
-            } else if (talk_current_emotion == EMOTION_HAPPY) {
-                LabelView_talk_eyeL->setImageBuffer((uint16_t*)&rgb16_laugh_l_new_88_85);
-                LabelView_talk_eyeR->setImageBuffer((uint16_t*)&rgb16_laugh_r_new_88_85);
-                if (dir == 1) {
-                    if (++count >= 5) { count = 5; dir = 0; }
-                } else {
-                    if (--count <= 0) { count = 0; dir = 1; }
-                }
-                LabelView_talk_eyeL->setPosition(72, 66 + count * 2);
-                LabelView_talk_eyeR->setPosition(8, 66 + count * 2);
-            } else if (talk_current_emotion == EMOTION_ANGRY) {
-                if (++count >= 8) count = 0;
-                if (count > 3) {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_angry_female_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_angry_female_r2_88_85);
-                } else {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_angry_female_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_angry_female_r1_88_85);
-                }
-            } else if (talk_current_emotion == EMOTION_SAD) {
-                if (++count >= 20) count = 0;
-                if (count == 14 || count == 15 || count == 18 || count == 19) {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_closeeye_l_new_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_closeeye_r_new_88_85);
-                } else {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_sad_female_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_sad_female_r_88_85);
-                }
-            } else if (talk_current_emotion == EMOTION_DOUBT) {
-                if (++count >= 8) count = 0;
-                if (count > 3) {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_doubt_female_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_doubt_female_r2_88_85);
-                } else {
-                    LabelView_talk_eyeL->setImageBuffer((uint16_t*)rgb16_doubt_female_l_88_85);
-                    LabelView_talk_eyeR->setImageBuffer((uint16_t*)rgb16_doubt_female_r1_88_85);
-                }
-            }
-        }
-    }
-}
-
-static int talk_play_task(void *param)
-{
-    (void)param;
-    while (talk_init_flag) {
-        while (talk_running_flag) {
-            /* update state from SDK */
-            if (!sdk_engine || sdk_status == CONVAI_STATUS_IDLE) {
-                talk_play_type = PLAY_TYPE_SLEEP;
-                LabelView_talk_text->setText("待机中....");
-            } else if (sdk_status == CONVAI_STATUS_LISTENING) {
-                talk_play_type = PLAY_TYPE_SILENCE;
-                LabelView_talk_text->setText("聆听中....");
-            } else if (sdk_status == CONVAI_STATUS_THINKING) {
-                talk_play_type = PLAY_TYPE_SILENCE;
-                LabelView_talk_text->setText("思考中....");
-            } else if (sdk_status == CONVAI_STATUS_ANSWERING) {
-                talk_play_type = PLAY_TYPE_SPEAK;
-                LabelView_talk_text->setText("回答中....");
-            } else if (sdk_status == CONVAI_STATUS_INTERRUPTED) {
-                talk_play_type = PLAY_TYPE_SILENCE;
-                LabelView_talk_text->setText("已打断");
-            } else {
-                talk_play_type = PLAY_TYPE_SILENCE;
-                LabelView_talk_text->setText("正在思考....");
-            }
-
-            /* emotion is driven by cloud_emotion_callback via server function call */
-            update_talk_avatar_ui(talk_play_type);
-            FrameView_talk->flush(0, 0, APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT);
-            goldie_msleep(200);
-        }
-        goldie_msleep(200);
-    }
-    talk_thread_running = 0;
-    return 0;
-}
-
-static void talk_play_animation(void)
-{
-    talk_running_flag = 1;
-}
-
-static void talk_stop_animation(void)
-{
-    talk_running_flag = 0;
-}
 
 // 启动输入法函数
 static void launch_input_method(std::shared_ptr<TextEditView> target) {
@@ -1568,6 +1321,10 @@ static int generate_convai_config_json(char *buf, size_t buf_size)
 static int apply_ai_settings(void)
 {
     char *json_buf = (char *)goldie_malloc(CONVAI_CONFIG_JSON_MAX);
+    if (json_buf == NULL) {
+        printf("[AI Settings] ERROR: config JSON alloc failed\n");
+        return -1;
+    }
     memset(json_buf, 0, CONVAI_CONFIG_JSON_MAX);
 
     if (generate_convai_config_json(json_buf, CONVAI_CONFIG_JSON_MAX) != 0) {
@@ -1853,24 +1610,10 @@ static void init_views(void)
 
 
      ButtonView_cloudback->setOnClick([](void*) {
-        if (FrameView_talk->isVisible()) {
-            /* on talk page: return to cloud config page */
-            log_wifi_operation("从对话页返回AI配置页");
-            talk_stop_animation();
-            hide_talk_page();
-        } else {
-            /* on cloud page: return to main page, keep engine running */
-            log_wifi_operation("从AI服务页面返回主页面 (引擎保持运行)");
-            show_main_page();
-        }
+        /* on cloud page: return to main page, keep engine running */
+        log_wifi_operation("从AI服务页面返回主页面 (引擎保持运行)");
+        show_main_page();
     });
-
-    /* "进入对话" 按钮：从配置页跳转到对话页 */
-    ButtonView_enter_talk->setOnClick([](void*) {
-        printf("[Settings] enter talk from cloud page\n");
-        talk_play_animation();
-        show_talk_page();
-	 });
 
     ButtonView_cancle17->setOnClick([](void*) {
 		 log_wifi_operation("从APIKEY页面返回");
@@ -2035,20 +1778,17 @@ static void goldie_app_run(void)
     /* save initial default config so convai_start picks it up */
     {
         char *json_buf = (char *)goldie_malloc(CONVAI_CONFIG_JSON_MAX);
-        memset(json_buf, 0, CONVAI_CONFIG_JSON_MAX);
-        if (generate_convai_config_json(json_buf, CONVAI_CONFIG_JSON_MAX) == 0) {
-            convai_bridge_set_startup_config(json_buf);
-            printf("[AI Settings] Initial default config saved:\n%s\n", json_buf);
+        if (json_buf == NULL) {
+            printf("[AI Settings] ERROR: initial config alloc failed\n");
+        } else {
+            memset(json_buf, 0, CONVAI_CONFIG_JSON_MAX);
+            if (generate_convai_config_json(json_buf, CONVAI_CONFIG_JSON_MAX) == 0) {
+                convai_bridge_set_startup_config(json_buf);
+                printf("[AI Settings] Initial default config saved:\n%s\n", json_buf);
+            }
+            goldie_free(json_buf);
         }
-        goldie_free(json_buf);
     }
-
-    /* start the talk animation thread (idle until talk_running_flag is set) */
-    talk_init_flag = 1;
-    goldie_thread_lock();
-    talk_thread = new Goldie_Thread(talk_play_task, NULL, 0x1000);
-    talk_thread_running = 1;
-    goldie_thread_unlock();
 
 	Window_main->flush(0, 0, APP_WINDOW_WIDTH, APP_WINDOW_HEIGHT);
 }
@@ -2056,7 +1796,6 @@ static void goldie_app_run(void)
 static void goldie_app_suspend(void)
 {
     /* pause animation thread */
-    talk_stop_animation();
     if(sdk_engine)convai_bridge_on_status(NULL);
     if(sdk_engine)convai_bridge_on_event(NULL);
     if(sdk_engine)convai_bridge_on_message(NULL);
@@ -2069,21 +1808,10 @@ static void goldie_app_resume(void)
     if(sdk_engine)convai_bridge_on_event(cloud_event_callback);
     if(sdk_engine)convai_bridge_on_message(cloud_message_callback);
     window_resume();
-    /* resume animation if talk page is visible */
-    if (FrameView_talk->isVisible()) {
-        talk_play_animation();
-    }
 }
 
 static void goldie_app_exit(void)
 {
-   /* stop animation thread */
-   talk_stop_animation();
-   talk_init_flag = 0;
-   while (talk_thread_running) {
-       goldie_msleep(50);
-       printf("wait for talk thread exit \r\n");
-   }
    /* stop engine if running */
    if (sdk_engine && sdk_status != CONVAI_STATUS_IDLE) {
        convai_bridge_stop();
@@ -2113,11 +1841,6 @@ static void goldie_app_exit(void)
         }
    }
 #endif
-    /* cleanup talk thread */
-    if (talk_thread) {
-        delete talk_thread;
-        talk_thread = NULL;
-    }
     window_exit();
 }
 
@@ -2138,14 +1861,7 @@ static void goldie_keyboard_event(int pressure, int key)
 {
     if((key == SYSTEM_KEY_VALUE_BACK) && (pressure == 1))
     {
-        /* page-aware BACK navigation */
-        if (FrameView_talk->isVisible()) {
-            /* talk page → cloud config page */
-            printf("[Settings] BACK: talk → cloud\n");
-            talk_stop_animation();
-            hide_talk_page();
-            return;
-        }
+
         if (FrameView_cloud->isVisible()) {
             /* cloud config page → main page (keep engine running) */
             printf("[Settings] BACK: cloud → main\n");

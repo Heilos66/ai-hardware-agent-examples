@@ -18,11 +18,21 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/error.h"
+
+/* Forward-declare poll_table for lwip/sockets.h (WS63 lwip header uses it
+ * in a function prototype without including poll.h). */
+typedef struct poll_table poll_table;
+
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include "lwip/arch/sys_arch.h"  /* sys_now() — monotonic ms systick */
+
 #include <time.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #define NTP_SERVICE_INDEX 7
 
@@ -36,12 +46,22 @@ struct convai_mutex_s {
 
 struct convai_thread_s {
     void *handle;
-    goldie_sem exit_sem;
-    int exited;
+    goldie_sem exit_sem;  /* notify when thread exits */
+    int exited;           /* exit flag */
 };
 
 struct convai_socket_s {
     mbedtls_net_context net;
+};
+
+struct convai_tls_s {
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_entropy_context entropy;
+    mbedtls_x509_crt cacert;
+    convai_socket_t *sock;  /* 持有 socket 引用 */
+    int connected;
 };
 
 /* Manual implementation of timegm for platforms that don't have it (like WS63) */
@@ -110,10 +130,20 @@ static void ws63_sleep_ms(uint32_t ms) {
     goldie_msleep((int)ms);
 }
 
+/* Monotonic millisecond tick for interval/timeout math (PING/reconnect/stop).
+ * ws63_get_time_ms is NTP wall-clock with only SECOND resolution and it jumps on
+ * NTP sync — unusable for sub-second PING timing (a 30s PING would actually fire
+ * at ~31s, racing a ~30s server idle timeout, and NTP jumps corrupt the math).
+ * sys_now() is lwIP's systick-based monotonic ms counter — millisecond-accurate
+ * and non-jumping. */
+static uint64_t ws63_tick_ms(void) {
+    return (uint64_t)sys_now();
+}
+
 /* ===== OSAL – Mutex ===== */
 static int ws63_mutex_create(convai_mutex_t **mutex) {
     if (mutex == NULL) return -1;
-    convai_mutex_t *m = (convai_mutex_t*)malloc(sizeof(*m));
+    convai_mutex_t *m = (convai_mutex_t*)goldie_malloc(sizeof(*m));
     if (m == NULL) return -1;
     goldie_mutex_init(&m->mutex);
     *mutex = m;
@@ -123,7 +153,7 @@ static int ws63_mutex_create(convai_mutex_t **mutex) {
 static void ws63_mutex_destroy(convai_mutex_t *mutex) {
     if (mutex == NULL) return;
     goldie_mutex_destroy(&mutex->mutex);
-    free(mutex);
+    goldie_free(mutex);
 }
 
 static void ws63_mutex_lock(convai_mutex_t *mutex) {
@@ -201,6 +231,16 @@ static void ws63_thread_destroy(convai_thread_t *thread) {
     if (!thread->exited) {
         goldie_sem_wait(&thread->exit_sem);
     }
+    /* Destroy the underlying goldie/LiteOS thread so its task stack is returned
+     * to the LiteOS task pool. Without this the convai_thread_t struct is freed
+     * (heap) but the LiteOS task (e.g. the 16KB convai_io stack) leaks in the
+     * task pool — repeated start/stop (or reconnect cycles) exhaust the pool and
+     * subsequent LOS_TaskCreate fails with 0x3000200 (LOS_ERRNO_TSK_TSKMEMOUT),
+     * taking down convai_audio / convai_playback. */
+    if (thread->handle) {
+        goldie_thread_destroy(thread->handle);
+        thread->handle = NULL;
+    }
     goldie_sem_destroy(&thread->exit_sem);
     goldie_free(thread);
 }
@@ -234,23 +274,96 @@ static int ws63_socket_create(convai_socket_t **sock) {
 
 static int ws63_socket_destroy(convai_socket_t *sock) {
     if (sock == NULL) return 0;
+    /* Explicitly close the lwIP fd. mbedtls_net_free() in the prebuilt mbedtls
+     * lib may call musl close() (not lwip_close), which does NOT release the
+     * lwIP socket — the fd then leaks (observed fd 0→1→... across reconnects),
+     * and each leaked socket keeps its send/recv buffers (~tens of KB), driving
+     * the heap toward exhaustion over reconnect cycles. lwip_close is the
+     * authoritative close for an fd created by lwip_socket. */
+    if (sock->net.fd >= 0) {
+        lwip_close(sock->net.fd);
+        sock->net.fd = -1;
+    }
     mbedtls_net_free(&sock->net);
     goldie_free(sock);
     return 0;
 }
 
+/* Non-blocking TCP connect: resolve host, create a socket, set it non-blocking,
+ * and initiate connect (returns immediately; EINPROGRESS is the expected "in
+ * progress" result). The fd is stored in sock->net.fd so the SDK poll loop can
+ * drive it (poll WRITE + getsockopt SO_ERROR) and the TLS BIO can use it.
+ * Returns 0 if connect was initiated (including EINPROGRESS), <0 on error. */
 static int ws63_socket_connect(convai_socket_t *sock, const char *host, uint16_t port) {
     if (sock == NULL || host == NULL) return -1;
-    char service[6];
-    snprintf(service, sizeof(service), "%u", port);
-    return mbedtls_net_connect(&sock->net, host, service, MBEDTLS_NET_PROTO_TCP);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    printf("[I] ws63_net: resolving %s:%s ...\n", host, port_str);
+    struct addrinfo *res = NULL;
+    int gai = lwip_getaddrinfo(host, port_str, &hints, &res);
+    if (gai != 0 || res == NULL) {
+        printf("[E] ws63_net: DNS resolve failed for %s (gai=%d)\n", host, gai);
+        return -1;
+    }
+
+    /* Log the resolved address so we can confirm the address conversion worked. */
+    {
+        char addr_str[INET_ADDRSTRLEN] = {0};
+        struct sockaddr_in *sin = (struct sockaddr_in *)res->ai_addr;
+        const char *s = lwip_inet_ntop(AF_INET, &sin->sin_addr, addr_str, sizeof(addr_str));
+        printf("[I] ws63_net: resolved %s -> %s (port=%u)\n", host,
+               s ? addr_str : "?", port);
+    }
+
+    int fd = lwip_socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) {
+        printf("[E] ws63_net: lwip_socket failed (errno=%d)\n", errno);
+        lwip_freeaddrinfo(res);
+        return -1;
+    }
+    printf("[I] ws63_net: socket created fd=%d\n", fd);
+
+    /* Non-blocking mode before connect so lwip_connect returns EINPROGRESS. */
+    unsigned long nb = 1UL;
+    lwip_ioctl(fd, FIONBIO, &nb);
+
+    int cr = lwip_connect(fd, res->ai_addr, res->ai_addrlen);
+    int saved_errno = errno;
+    lwip_freeaddrinfo(res);
+
+    if (cr != 0 && saved_errno != EINPROGRESS) {
+        printf("[E] ws63_net: lwip_connect failed (errno=%d)\n", saved_errno);
+        lwip_close(fd);
+        return -1;
+    }
+
+    printf("[I] ws63_net: connect initiated (fd=%d, %s)\n", fd,
+           (cr == 0) ? "connected" : "EINPROGRESS");
+
+    /* Connect initiated (cr == 0 already connected, or EINPROGRESS pending).
+     * Store the lwIP fd in the mbedtls_net_context so the TLS BIO (which calls
+     * mbedtls_net_send/recv -> lwip_send/recv) and socket_poll both use it. */
+    sock->net.fd = fd;
+    return 0;
 }
 
 static int ws63_socket_send(convai_socket_t *sock, const uint8_t *buf, size_t len, size_t *sent) {
     if (sent) *sent = 0;
     if (sock == NULL || buf == NULL) return -1;
     int ret = mbedtls_net_send(&sock->net, buf, len);
-    if (ret < 0) return ret;
+    if (ret < 0) {
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+            return 0;  /* would-block: 0 bytes transferred, ret 0 */
+        return -1;
+    }
     if (sent) *sent = (size_t)ret;
     return 0;
 }
@@ -259,15 +372,25 @@ static int ws63_socket_recv(convai_socket_t *sock, uint8_t *buf, size_t len, siz
     if (recvd) *recvd = 0;
     if (sock == NULL || buf == NULL) return -1;
     int ret = mbedtls_net_recv(&sock->net, buf, len);
-    if (ret < 0) return ret;
+    if (ret == 0)
+        return -1;  /* peer closed */
+    if (ret < 0) {
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+            return 0;  /* would-block: 0 bytes transferred, ret 0 */
+        return -1;  /* error */
+    }
     if (recvd) *recvd = (size_t)ret;
     return 0;
 }
 
 static int ws63_socket_set_nonblock(convai_socket_t *sock, int non_block) {
-    (void)sock;
-    (void)non_block;
-    return 0;
+    if (sock == NULL) return -1;
+    if (sock->net.fd < 0) return -1;
+    /* Use lwip_ioctl(FIONBIO) directly because mbedtls_net_set_nonblock
+     * depends on fcntl() which is unavailable in the WS63 LiteOS build. */
+    unsigned long nonblock = non_block ? 1UL : 0UL;
+
+    return lwip_ioctl(sock->net.fd, FIONBIO, &nonblock);
 }
 
 static int ws63_socket_is_connected(convai_socket_t *sock) {
@@ -280,13 +403,258 @@ static int ws63_socket_get_fd(convai_socket_t *sock) {
     return sock->net.fd;
 }
 
-/* ===== TLSAL (stub) ===== */
-static int ws63_tls_create(convai_tls_t **tls) { (void)tls; return 0; }
-static int ws63_tls_destroy(convai_tls_t *tls) { (void)tls; return 0; }
-static int ws63_tls_connect(convai_tls_t *tls, void *sock, const char *host) { (void)tls; (void)sock; (void)host; return 0; }
-static int ws63_tls_read(convai_tls_t *tls, uint8_t *buf, size_t len, size_t *nread) { (void)tls; (void)buf; (void)len; if (nread) *nread = 0; return 0; }
-static int ws63_tls_write(convai_tls_t *tls, const uint8_t *buf, size_t len, size_t *nwrite) { (void)tls; (void)buf; (void)len; if (nwrite) *nwrite = 0; return 0; }
-static int ws63_tls_close(convai_tls_t *tls) { (void)tls; return 0; }
+static int ws63_socket_get_error(convai_socket_t *sock) {
+    if (sock == NULL || sock->net.fd < 0) return -1;
+    int so_error = 0;
+    socklen_t optlen = sizeof(so_error);
+    if (lwip_getsockopt(sock->net.fd, SOL_SOCKET, SO_ERROR, &so_error, &optlen) < 0)
+        return -1;
+    return so_error;  /* 0 = no error, positive = errno */
+}
+
+/* ===== TLSAL – mbedTLS implementation (platform layer; SDK is mbedtls-free) ===== */
+
+/* BIO callbacks for mbedTLS (internal). Call mbedtls_net_* directly so that on a
+ * non-blocking socket a would-block surfaces as MBEDTLS_ERR_SSL_WANT_WRITE/WANT_READ
+ * (the ws63_socket_* wrappers collapse it to -1, which would be a fatal error). */
+static int ws63_tls_bio_send(void *ctx, const unsigned char *buf, size_t len)
+{
+    convai_socket_t *sock = (convai_socket_t *)ctx;
+    if (sock == NULL) return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    return mbedtls_net_send(&sock->net, buf, len);
+}
+
+static int ws63_tls_bio_recv(void *ctx, unsigned char *buf, size_t len)
+{
+    convai_socket_t *sock = (convai_socket_t *)ctx;
+    if (sock == NULL) return MBEDTLS_ERR_SSL_BAD_INPUT_DATA;
+    return mbedtls_net_recv(&sock->net, buf, len);
+}
+
+static int ws63_tls_create(convai_tls_t **tls)
+{
+    if (tls == NULL) return -1;
+
+    convai_tls_t *t = (convai_tls_t *)goldie_malloc(sizeof(*t));
+    if (t == NULL) return -1;
+    memset(t, 0, sizeof(*t));
+
+    mbedtls_ssl_init(&t->ssl);
+    mbedtls_ssl_config_init(&t->conf);
+    mbedtls_ctr_drbg_init(&t->ctr_drbg);
+    mbedtls_entropy_init(&t->entropy);
+    mbedtls_x509_crt_init(&t->cacert);
+
+    // Seed RNG
+    int ret = mbedtls_ctr_drbg_seed(&t->ctr_drbg, mbedtls_entropy_func,
+                                     &t->entropy,
+                                     (const unsigned char *)"convai_tls", 10);
+    if (ret != 0) goto tls_create_fail;
+
+    // Config SSL defaults
+    ret = mbedtls_ssl_config_defaults(&t->conf,
+                                      MBEDTLS_SSL_IS_CLIENT,
+                                      MBEDTLS_SSL_TRANSPORT_STREAM,
+                                      MBEDTLS_SSL_PRESET_DEFAULT);
+    if (ret != 0) goto tls_create_fail;
+
+    mbedtls_ssl_conf_rng(&t->conf, mbedtls_ctr_drbg_random, &t->ctr_drbg);
+    mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_NONE);
+    /* Silence mbedTLS debug output (e.g. "mbedtls_ssl_read_record ..." prints) which
+     * floods the log and burns CPU during non-blocking reads. */
+    mbedtls_ssl_conf_dbg(&t->conf, NULL, NULL);
+
+    ret = mbedtls_ssl_setup(&t->ssl, &t->conf);
+    if (ret != 0) goto tls_create_fail;
+
+    *tls = t;
+    return 0;
+
+tls_create_fail:
+    /* Release every mbedTLS sub-object that was init'd, in reverse order, so a
+     * setup failure doesn't leak the entropy/drbg/ssl internals already allocated.
+     * mbedtls_*_free are safe on a context that was init'd but not fully set up. */
+    mbedtls_ssl_free(&t->ssl);
+    mbedtls_ssl_config_free(&t->conf);
+    mbedtls_ctr_drbg_free(&t->ctr_drbg);
+    mbedtls_entropy_free(&t->entropy);
+    mbedtls_x509_crt_free(&t->cacert);
+    goldie_free(t);
+    return -1;
+}
+
+static int ws63_tls_destroy(convai_tls_t *tls)
+{
+    if (tls == NULL) return 0;
+    mbedtls_ssl_free(&tls->ssl);
+    mbedtls_ssl_config_free(&tls->conf);
+    mbedtls_ctr_drbg_free(&tls->ctr_drbg);
+    mbedtls_entropy_free(&tls->entropy);
+    mbedtls_x509_crt_free(&tls->cacert);
+    goldie_free(tls);
+    return 0;
+}
+
+/* Setup only: bind the socket + set hostname + load CA cert (if provided).
+ * The handshake itself is driven incrementally by ws63_tls_handshake_step
+ * (called from the SDK poll loop) so the SDK's IO thread is never blocked.
+ * @param ca_cert  PEM CA cert; non-NULL → parse + VERIFY_REQUIRED,
+ *                  NULL → VERIFY_NONE (skip verification). */
+static int ws63_tls_connect(convai_tls_t *tls, void *sock, const char *host,
+                            const char *ca_cert)
+{
+    if (tls == NULL || sock == NULL || host == NULL) return -1;
+
+    convai_socket_t *socket = (convai_socket_t *)sock;
+    tls->sock = socket;
+
+    mbedtls_ssl_set_hostname(&tls->ssl, host);
+    mbedtls_ssl_set_bio(&tls->ssl, socket,
+                        ws63_tls_bio_send, ws63_tls_bio_recv, NULL);
+
+    if (ca_cert != NULL) {
+        /* Load the CA cert and require server certificate verification. */
+        int ret = mbedtls_x509_crt_parse(&tls->cacert,
+                                          (const unsigned char *)ca_cert,
+                                          strlen(ca_cert) + 1);
+        if (ret < 0) {
+            printf("[E] ws63_tls: CA cert parse failed: -0x%x\n", (unsigned int)(-ret));
+            return -1;
+        }
+        mbedtls_ssl_conf_ca_chain(&tls->conf, &tls->cacert, NULL);
+        mbedtls_ssl_conf_authmode(&tls->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        printf("[I] VERIFY_REQUIRED (CA cert loaded, %d bytes)\n",
+               (int)strlen(ca_cert));
+    } else {
+        /* No CA cert — skip verification (test/custom environments). */
+        mbedtls_ssl_conf_authmode(&tls->conf, MBEDTLS_SSL_VERIFY_NONE);
+        printf("[W] VERIFY_NONE (no CA cert provided)\n");
+    }
+
+    return 0;
+}
+
+/* One non-blocking step of the TLS handshake.
+ *   *done=1            : handshake complete
+ *   *want_flags=POLL_* : need to poll socket in that direction, then re-call
+ *   return <0           : fatal handshake error */
+static int ws63_tls_handshake_step(convai_tls_t *tls, int *want_flags, int *done)
+{
+    if (tls == NULL || want_flags == NULL || done == NULL) return -1;
+    *want_flags = 0;
+    *done = 0;
+
+    int ret = mbedtls_ssl_handshake(&tls->ssl);
+    if (ret == 0) {
+        tls->connected = 1;
+        *done = 1;
+        return 0;
+    }
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+        *want_flags = CONVAI_POLL_READ;
+        return 0;
+    }
+    if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        *want_flags = CONVAI_POLL_WRITE;
+        return 0;
+    }
+    printf("[E] ws63_tls: handshake failed: -0x%x\n", (unsigned int)(-ret));
+    return -1;
+}
+
+static int ws63_tls_read(convai_tls_t *tls, uint8_t *buf, size_t len, size_t *nread)
+{
+    if (nread) *nread = 0;
+    if (tls == NULL || buf == NULL) return -1;
+
+    int ret = mbedtls_ssl_read(&tls->ssl, (unsigned char *)buf, (int)len);
+    if (ret < 0) {
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+            ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            return 0;  /* would-block: 0 bytes, ret 0 */
+        }
+        return -1;  /* error or peer-closed */
+    }
+    if (ret == 0) {
+        return -1;  /* peer closed the connection */
+    }
+    if (nread) *nread = (size_t)ret;
+    return 0;
+}
+
+static int ws63_tls_write(convai_tls_t *tls, const uint8_t *buf, size_t len, size_t *nwrite)
+{
+    if (nwrite) *nwrite = 0;
+    if (tls == NULL || buf == NULL) return -1;
+
+    int ret = mbedtls_ssl_write(&tls->ssl, (const unsigned char *)buf, (int)len);
+    if (ret < 0) {
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+            ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            return 0;
+        }
+        return -1;
+    }
+    if (nwrite) *nwrite = (size_t)ret;
+    return 0;
+}
+
+static int ws63_tls_close(convai_tls_t *tls)
+{
+    if (tls == NULL) return -1;
+    mbedtls_ssl_close_notify(&tls->ssl);
+    tls->connected = 0;
+    return 0;
+}
+
+/* ===== NetAL: socket_poll (required by the poll architecture) =====
+ *
+ * WS63 lwip_select() does NOT honour a non-zero timeout when there are no ready
+ * fds: it returns ret=0 immediately (confirmed by tracing select ret=0 printed
+ * very fast). This busy-loops the IO thread (CPU 100%, mbedtls debug flood) and
+ * eventually overflows the stack on the 401 path. musl poll() is not linked on
+ * this target (undefined reference to `poll`).
+ *
+ * Workaround: poll with a zero-timeout select (non-blocking readiness check) and
+ * sleep in small slices when nothing is ready, retrying up to timeout_ms/slice.
+ * Event latency is bounded by the slice (10ms). No time-of-day measurement is
+ * used (ws63_get_time_ms has only second resolution), just a slice counter. */
+static int ws63_socket_poll(convai_socket_t *sock, int events, int *revents, int timeout_ms) {
+    if (sock == NULL || revents == NULL) return -1;
+    *revents = 0;
+
+    int fd = sock->net.fd;
+    if (fd < 0) return -1;
+
+    #define WS63_POLL_SLICE_MS 10
+    int slices = (timeout_ms > 0) ? (timeout_ms / WS63_POLL_SLICE_MS) : 0;
+
+    for (int i = 0; i <= slices; i++) {
+        fd_set rfds, wfds;
+        FD_ZERO(&rfds);
+        FD_ZERO(&wfds);
+        if (events & CONVAI_POLL_READ)  FD_SET(fd, &rfds);
+        if (events & CONVAI_POLL_WRITE) FD_SET(fd, &wfds);
+
+        struct timeval ztv;
+        ztv.tv_sec = 0;
+        ztv.tv_usec = 0;
+        int ret = select(fd + 1, &rfds, &wfds, NULL, &ztv);
+        if (ret < 0) {
+            printf("[E] ws63_net: select failed fd=%d errno=%d\n", fd, errno);
+            return -1;
+        }
+        if (FD_ISSET(fd, &rfds)) *revents |= CONVAI_POLL_READ;
+        if (FD_ISSET(fd, &wfds)) *revents |= CONVAI_POLL_WRITE;
+        if (*revents != 0) {
+            return 0;  /* event ready */
+        }
+        if (i < slices) {
+            goldie_msleep(WS63_POLL_SLICE_MS);  /* wait a slice, then re-check */
+        }
+    }
+    return 0;  /* timed out, no event */
+}
 
 /* ===== Misc ===== */
 static void ws63_log(int level, const char *file, int line, const char *fmt, ...) {
@@ -372,6 +740,7 @@ const convai_platform_t g_convai_platform = {
         .free = ws63_free,
         .get_time_ms = ws63_get_time_ms,
         .sleep_ms = ws63_sleep_ms,
+        .get_tick_ms = ws63_tick_ms,
         .mutex_create = ws63_mutex_create,
         .mutex_destroy = ws63_mutex_destroy,
         .mutex_lock = ws63_mutex_lock,
@@ -391,11 +760,14 @@ const convai_platform_t g_convai_platform = {
         .socket_set_nonblock = ws63_socket_set_nonblock,
         .socket_is_connected = ws63_socket_is_connected,
         .socket_get_fd = ws63_socket_get_fd,
+        .socket_poll = ws63_socket_poll,
+        .socket_get_error = ws63_socket_get_error,
     },
     .tlsal = {
         .tls_create = ws63_tls_create,
         .tls_destroy = ws63_tls_destroy,
         .tls_connect = ws63_tls_connect,
+        .tls_handshake_step = ws63_tls_handshake_step,
         .tls_read = ws63_tls_read,
         .tls_write = ws63_tls_write,
         .tls_close = ws63_tls_close,

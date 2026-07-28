@@ -52,6 +52,20 @@ convai_status_e convai_bridge_get_status(void);
 /** Non-zero if agent is currently speaking. */
 int convai_bridge_is_speaking(void);
 
+/** Uplink (mic) audio send statistics since the recording thread started.
+ *  frames_sent: mic frames successfully enqueued to the SDK send queue.
+ *  frames_dropped: mic frames dropped because send failed (queue full / OOM /
+ *  not connected). A high drop rate (>10%) can degrade upstream ASR quality.
+ *  Returns 0 on success, -1 if no recording has run. */
+int convai_bridge_get_uplink_stats(unsigned int *frames_sent,
+                                   unsigned int *frames_dropped);
+
+/** Downlink (playback) audio statistics since playback started.
+ *  dropped_bytes: decoded PCM dropped because the playback ring was full
+ *  (overrun). Non-zero means the playback thread can't keep up with arrivals
+ *  (CPU/scheduling), distinct from underrun (DMA runs dry, no drops).
+ *  Returns 0 on success, -1 if no playback has run. */
+int convai_bridge_get_downlink_stats(unsigned int *dropped_bytes);
 /** Opaque audio source handle (AudioService from goldieos). */
 typedef void convai_audio_source_t;
 
@@ -89,6 +103,14 @@ void convai_bridge_on_message(convai_bridge_message_cb cb);
  */
 void convai_bridge_set_startup_config(const char *config);
 const char *convai_bridge_get_startup_config(void);
+
+/**
+ * Set the device name used in the create-time config (e.g. WiFi MAC).
+ * Call before convai_bridge_init(). If not set or NULL, a hardcoded default
+ * is used. The app layer is responsible for obtaining a platform-specific
+ * unique ID — bridge does not depend on any platform's device_id function.
+ */
+void convai_bridge_set_device_name(const char *name);
 
 #ifdef __cplusplus
 }

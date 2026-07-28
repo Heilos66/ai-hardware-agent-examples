@@ -1,12 +1,12 @@
 /**
- * @file convai_config.c
+ * @file convai_config_file.c
  * @brief Configuration file reader implementation.
  *
  * Reads a simple key=value config file from the executable's directory.
  * Supports both space-separated and newline-separated entries.
  */
 
-#include "convai_config.h"
+#include "convai_config_file.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -161,7 +161,7 @@ static int parse_config_line(char *line)
 
 /* ---- public API ---- */
 
-const char *convai_config_get(const char *key)
+const char *convai_config_file_get(const char *key)
 {
     if (key == NULL) return NULL;
 
@@ -173,37 +173,37 @@ const char *convai_config_get(const char *key)
     return NULL;
 }
 
-const char *convai_config_get_auth_type(void)
+const char *convai_config_file_get_auth_type(void)
 {
-    return convai_config_get("auth_type");
+    return convai_config_file_get("auth_type");
 }
 
-const char *convai_config_get_product_id(void)
+const char *convai_config_file_get_product_id(void)
 {
-    return convai_config_get("product_id");
+    return convai_config_file_get("product_id");
 }
 
-const char *convai_config_get_product_key(void)
+const char *convai_config_file_get_product_key(void)
 {
-    return convai_config_get("product_key");
+    return convai_config_file_get("product_key");
 }
 
-const char *convai_config_get_product_secret(void)
+const char *convai_config_file_get_product_secret(void)
 {
-    return convai_config_get("product_secret");
+    return convai_config_file_get("product_secret");
 }
 
-const char *convai_config_get_device_name(void)
+const char *convai_config_file_get_device_name(void)
 {
-    return convai_config_get("device_name");
+    return convai_config_file_get("device_name");
 }
 
-const char *convai_config_get_agent_id(void)
+const char *convai_config_file_get_agent_id(void)
 {
-    return convai_config_get("agent_id");
+    return convai_config_file_get("agent_id");
 }
 
-int convai_config_init_path(const char *path)
+int convai_config_file_init_path(const char *path)
 {
     if (path == NULL) return -1;
 
@@ -224,7 +224,7 @@ int convai_config_init_path(const char *path)
     return ret;
 }
 
-int convai_config_init(void)
+int convai_config_file_init(void)
 {
     char dir[CONVAI_CONFIG_MAX_LINE];
     if (get_exe_dir(dir, sizeof(dir)) < 0) return -1;
@@ -234,10 +234,10 @@ int convai_config_init(void)
                            dir, CONVAI_CONFIG_FILENAME);
     if (written < 0 || (size_t)written >= sizeof(path)) return -1;
 
-    return convai_config_init_path(path);
+    return convai_config_file_init_path(path);
 }
 
-void convai_config_deinit(void)
+void convai_config_file_deinit(void)
 {
     g_entry_count = 0;
     memset(g_entries, 0, sizeof(g_entries));
