@@ -1320,15 +1320,16 @@ static int generate_convai_config_json(char *buf, size_t buf_size)
 
 static int apply_ai_settings(void)
 {
-    char *json_buf = (char *)goldie_malloc(CONVAI_CONFIG_JSON_MAX);
-    if (json_buf == NULL) {
-        printf("[AI Settings] ERROR: config JSON alloc failed\n");
-        return -1;
-    }
-    memset(json_buf, 0, CONVAI_CONFIG_JSON_MAX);
+    /* Static buffer: apply_ai_settings runs only on the settings UI thread and
+     * is not re-entered. convai_bridge_set_startup_config() strncpy's the config
+     * into its own storage and convai_update() encodes it synchronously into the
+     * send queue, so the buffer is not held past this call. Reusing a static
+     * buffer avoids a per-change ~2KB malloc/free and the heap fragmentation it
+     * causes on the memory-constrained WS63. Zero-initialised once at first use. */
+    static char json_buf[CONVAI_CONFIG_JSON_MAX];
+    json_buf[0] = '\0';
 
     if (generate_convai_config_json(json_buf, CONVAI_CONFIG_JSON_MAX) != 0) {
-        goldie_free(json_buf);
         printf("[AI Settings] ERROR: failed to generate config JSON\n");
         return -1;
     }
@@ -1340,7 +1341,6 @@ static int apply_ai_settings(void)
 
     /* Engine not running: just save config, no update needed */
     if (!sdk_engine) {
-        goldie_free(json_buf);
         printf("[AI Settings] Engine not running, config saved for next start\n");
         return 0;
     }
@@ -1348,13 +1348,11 @@ static int apply_ai_settings(void)
     /* Engine is running — apply immediately */
     int ret = convai_update(sdk_engine, json_buf);
     if (ret != CONVAI_OK) {
-        goldie_free(json_buf);
         printf("[AI Settings] ERROR: convai_update failed (ret=%d, %s)\n",
                ret, convai_err_2_str(ret));
         return -1;
     }
 
-    goldie_free(json_buf);
     printf("[AI Settings] convai_update OK\n");
     return 0;
 }

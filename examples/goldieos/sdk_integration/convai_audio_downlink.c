@@ -71,12 +71,11 @@ static int playback_thread_func(void *arg)
 
     printf("[convai_bridge] playback thread started (sr=%d, DMA feedback)\n", sr);
 
-    uint8_t *buf = (uint8_t *)goldie_malloc(PLAYBACK_READ_CHUNK);
-    if (!buf) {
-        printf("[convai_bridge] ERROR: playback buffer alloc failed\n");
-        goldie_sem_post(&ctrl->exit_sem);
-        return -1;
-    }
+    /* Static read buffer: the playback thread is a single instance (one
+     * g_playback_ctrl, joined in bridge_downlink_stop before any restart),
+     * so a file-scope buffer avoids a per-start malloc/free and the heap
+     * fragmentation it causes on the memory-constrained WS63. */
+    static uint8_t buf[PLAYBACK_READ_CHUNK];
 
     int prev_state = PLAYBACK_IDLE;
     int hw_started = 0;
@@ -217,7 +216,6 @@ static int playback_thread_func(void *arg)
     }
 
     printf("[convai_bridge] playback thread stopped\n");
-    goldie_free(buf);
     goldie_sem_post(&ctrl->exit_sem);
 
     return 0;

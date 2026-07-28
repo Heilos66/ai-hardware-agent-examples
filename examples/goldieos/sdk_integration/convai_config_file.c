@@ -4,18 +4,53 @@
  *
  * Reads a simple key=value config file from the executable's directory.
  * Supports both space-separated and newline-separated entries.
- * On embedded platforms (__EMBEDDED__ defined) there is no filesystem, so
- * all functions are no-ops: getters return NULL and init returns -1,
- * letting callers fall back to compiled-in defaults.
+ *
+ * On WS63 this feature is intentionally compiled out: the platform has no
+ * filesystem path to the executable (LiteOS has no /proc/self/exe), so init()
+ * always fails and the ~10KB static entry table would be dead BSS. The public
+ * API is still defined (returning NULL / -1) so convai_bridge_defaults.c's
+ * cfg_or() fallback to hardcoded defaults keeps working unchanged.
  */
 
 #include "convai_config_file.h"
 
-#ifndef __EMBEDDED__
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef PLATFORM_TYPE_WS63
+
+/* ---- WS63: no-op stubs (no static entry table -> 0 BSS) ---- */
+
+const char *convai_config_file_get(const char *key)
+{
+    (void)key;
+    return NULL;
+}
+
+const char *convai_config_file_get_auth_type(void)      { return NULL; }
+const char *convai_config_file_get_product_id(void)     { return NULL; }
+const char *convai_config_file_get_product_key(void)    { return NULL; }
+const char *convai_config_file_get_product_secret(void) { return NULL; }
+const char *convai_config_file_get_device_name(void)    { return NULL; }
+const char *convai_config_file_get_agent_id(void)       { return NULL; }
+
+int convai_config_file_init_path(const char *path)
+{
+    (void)path;
+    return -1;
+}
+
+int convai_config_file_init(void)
+{
+    return -1;
+}
+
+void convai_config_file_deinit(void)
+{
+}
+
+#else /* !PLATFORM_TYPE_WS63 — full filesystem-backed implementation */
 
 /* ---- platform-specific executable directory ---- */
 
@@ -248,38 +283,4 @@ void convai_config_file_deinit(void)
     memset(g_entries, 0, sizeof(g_entries));
 }
 
-#else /* __EMBEDDED__ */
-
-/* ---- Embedded stubs: no filesystem available, all no-ops.
- * Getters return NULL so callers fall back to compiled-in defaults. ---- */
-
-const char *convai_config_file_get(const char *key)
-{
-    (void)key;
-    return NULL;
-}
-
-const char *convai_config_file_get_auth_type(void)      { return NULL; }
-const char *convai_config_file_get_product_id(void)     { return NULL; }
-const char *convai_config_file_get_product_key(void)    { return NULL; }
-const char *convai_config_file_get_product_secret(void) { return NULL; }
-const char *convai_config_file_get_device_name(void)    { return NULL; }
-const char *convai_config_file_get_agent_id(void)       { return NULL; }
-
-int convai_config_file_init(void)
-{
-    return -1;  /* no filesystem on embedded */
-}
-
-int convai_config_file_init_path(const char *path)
-{
-    (void)path;
-    return -1;  /* no filesystem on embedded */
-}
-
-void convai_config_file_deinit(void)
-{
-    /* no-op */
-}
-
-#endif /* __EMBEDDED__ */
+#endif /* PLATFORM_TYPE_WS63 */

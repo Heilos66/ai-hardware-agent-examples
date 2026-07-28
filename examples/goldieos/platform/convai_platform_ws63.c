@@ -185,7 +185,6 @@ static int ws63_thread_wrapper(void *data) {
 static int ws63_thread_create(convai_thread_t **thread,
                               convai_thread_func_t func, void *arg,
                               const char *name, size_t stack_size, int priority) {
-    (void)priority;
     if (thread == NULL || func == NULL) return -1;
 
     convai_thread_t *t = (convai_thread_t*)goldie_malloc(sizeof(*t));
@@ -213,6 +212,16 @@ static int ws63_thread_create(convai_thread_t **thread,
         goldie_free(args);
         goldie_free(t);
         return -1;
+    }
+
+    /* Forward an explicit priority only when the caller set one (priority != 0).
+     * LiteOS uses higher-number = higher-priority (playback=21, audio=22,
+     * sys_init=24). goldie_thread_create has no priority param, so a non-zero
+     * request is applied post-create via goldie_thread_set_priority. A priority
+     * of 0 means "use goldie's default" — leave it untouched so the SDK's IO
+     * thread (which passes 0) keeps its default scheduling. */
+    if (priority != 0) {
+        goldie_thread_set_priority(t->handle, (unsigned int)priority);
     }
 
     *thread = t;
