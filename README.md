@@ -46,21 +46,30 @@ ai-hardware-agent-project/
 │       ├── CMakeLists.txt
 │       ├── sdk_integration/                # SDK 集成桥接层
 │       │   ├── convai_bridge.c/h
-│       │   ├── convai_config.c/h
-│       │   └── convai_codec_g711a.c/h
+│       │   ├── convai_bridge_defaults.c/h
+│       │   ├── convai_config_file.c/h
+│       │   ├── convai_codec_g711a.c/h
+│       │   ├── convai_audio_uplink.c
+│       │   ├── convai_audio_downlink.c
+│       │   ├── convai_audio_dump.c/h
+│       │   └── convai_audio_internal.h
 │       ├── apps/                           # 应用层
 │       ├── services/                       # 系统服务
 │       ├── drivers/                        # 硬件驱动
 │       ├── platform/ws63/                  # WS63 平台适配
 │       ├── platform/convai_platform_ws63.c # AI Hardware Agent HAL 实现
+│       ├── platform/convai_platform_ws63.h # AI Hardware Agent HAL 头文件
 │       ├── include/                        # GoldieOS 内部头文件
+│       ├── libs/                           # 预编译库
+│       ├── docs/                           # 开发文档
 │       ├── third_party/                    # 第三方库（Opus, FatFs, mbedTLS, TFLite 等）
 │       ├── init/                           # 系统初始化
 │       ├── compat/                         # 兼容层
 │       └── tools/                          # 工具集
 │           ├── build/                      #   构建工具
-│           │   ├── compiler/riscv/         #     交叉编译工具链
-│           │   ├── ws63_link_v4.exe        #     固件链接器
+│           │   ├── tools/                  #     构建子工具
+│           │   │   ├── compiler/riscv/     #       交叉编译工具链
+│           │   │   └── ws63_link_v4.exe    #       固件链接器
 │           │   └── config/ws63/            #     链接脚本 & 配置文件
 │           └── burn/                       #   烧录工具
 │               └── hisi/
@@ -91,6 +100,8 @@ Windows 下推荐使用 [MSYS2](https://www.msys2.org/)。
 
 > **下载地址：** `https://github.com/uoongx/ai-hardware-agent-examples.git`
 
+可以通过 `git clone` 获取，也可以下载仓库的 `.tar.gz` 发布包后解压。
+
 Examples 包内容：
 
 ```
@@ -106,6 +117,8 @@ ai-hardware-agent-examples
 │       ├── platform/ws63/       # WS63 平台适配
 │       ├── platform/            # AI Hardware Agent HAL 实现
 │       ├── include/             # GoldieOS 内部头文件
+│       ├── libs/                # 预编译库
+│       ├── docs/                # 开发文档
 │       ├── third_party/         # 第三方库（Opus, FatFs, mbedTLS, TFLite 等）
 │       ├── tools/               # 工具集
 │       │   ├── build/           #   构建工具（交叉编译工具链 + ws63_link_v4.exe）
@@ -123,7 +136,7 @@ ai-hardware-agent-examples
 SDK 包内容：
 
 ```
-ai-hardware-agent-sdk-26.6.0.tar
+ai-hardware-agent-sdk-xx.x.x.tar
 ├── include/convai/              # 公共 API 头文件
 │   ├── convai_api.h
 │   ├── convai_event.h
@@ -167,7 +180,7 @@ Test-Path libs/ws63/libconvai_sdk.a                # WS63 SDK 静态库
 
 # 确认桥接层文件完整
 Test-Path examples/goldieos/sdk_integration/convai_bridge.c
-Test-Path examples/goldieos/sdk_integration/convai_config.c
+Test-Path examples/goldieos/sdk_integration/convai_config_file.c
 Test-Path examples/goldieos/sdk_integration/convai_codec_g711a.c
 
 # 确认顶层构建脚本
@@ -178,7 +191,7 @@ Test-Path CMakeLists.txt
 
 ## 设备凭证配置
 
-编译前，需要将设备的五元组信息配置到 `convai_bridge.c` 中。
+编译前，需要将设备的五元组信息配置到 `convai_bridge_defaults.c` 中。
 
 ### 准备凭证信息
 
@@ -194,7 +207,7 @@ Test-Path CMakeLists.txt
 
 ### 修改默认配置
 
-在 `examples/goldieos/sdk_integration/convai_bridge.c` 中找到默认配置宏定义，替换为实际值：
+在 `examples/goldieos/sdk_integration/convai_bridge_defaults.c` 中找到默认配置宏定义，替换为实际值：
 
 ```c
 /* ---- default config ---- */
@@ -205,7 +218,7 @@ Test-Path CMakeLists.txt
 #define BRIDGE_DEFAULT_DEVICE_NAME    "your_device_name"    // ← 替换为实际的 device_name
 ```
 
-WS63 平台在 `convai_bridge_start()` 中直接使用这些默认值构建连接配置。
+WS63 平台在 `bridge_build_config_json()` 中直接使用这些默认值构建连接配置。
 
 > **注意：** 编译前务必确认凭证已替换为有效值，否则设备将无法连接平台服务。
 
@@ -364,4 +377,4 @@ examples/goldieos/tools/burn/hisi/BurnTool_5.0.39/BurnTool/BurnTool.exe
 
 ---
 
-> **版本信息：** 本文档基于 AI Hardware Agent SDK 26.6.0 版本编写。
+> **版本信息：** 本文档基于 AI Hardware Agent SDK 26.6.2 版本编写。
