@@ -6,6 +6,7 @@
  * Extracted from convai_bridge.c — behavior is bit-for-bit identical.
  */
 #include "convai_audio_internal.h"
+#include "convai_codec_g711a.h"
 #include "audio_service.h"
 #include "goldie_osal.h"
 #include "ringbuffer.h"

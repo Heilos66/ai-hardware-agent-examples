@@ -131,7 +131,6 @@ void  goldie_free(void *addr);
         static void _goldie_init_##func(void) { \
             register_init_function(func, #func); \
         }
-    __attribute__((weak)) void call_all_init_functions(void) {}
   #elif defined(_MSC_VER)
     #pragma section(".CRT$XCU", read)
     #define GOLDIE_INIT_CALL_(func) \

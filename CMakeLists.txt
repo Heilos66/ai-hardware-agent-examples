@@ -17,7 +17,7 @@ else()
 endif()
 
 # ====================================================================
-#  Examples  (for ws63 platforms)
+#  Examples  (ws63 firmware / win simulator)
 # ====================================================================
 
 if(CONVAI_PLATFORM STREQUAL "ws63")
@@ -43,5 +43,16 @@ if(CONVAI_PLATFORM STREQUAL "ws63")
         -g
     )
     add_subdirectory(examples/goldieos)
+elseif(CONVAI_PLATFORM STREQUAL "win")
+    # ---- Windows simulator (native MinGW gcc/g++) ----
+    # Configure with:
+    #   cmake -G "MinGW Makefiles" -DCONVAI_PLATFORM=win \
+    #         -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+    #         -DCMAKE_C_COMPILER_WORKS=1 -DCMAKE_CXX_COMPILER_WORKS=1 \
+    #         -DCMAKE_MAKE_PROGRAM=mingw32-make ..
+    message(STATUS "CONVAI_PLATFORM=win: building Windows simulator (goldieos.exe)")
+    add_subdirectory(examples/goldieos)
+else()
+    message(STATUS "CONVAI_PLATFORM not set or unsupported: '${CONVAI_PLATFORM}'. Supported platforms: ws63, win")
 endif()
 

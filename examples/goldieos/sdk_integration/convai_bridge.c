@@ -8,6 +8,7 @@
  */
 #include "convai_bridge.h"
 #include "convai_bridge_defaults.h"
+#include "convai_config_file.h"
 #include "convai_audio_internal.h"
 #include "service_manager.h"
 #include "goldie_osal.h"
@@ -118,6 +119,14 @@ void convai_bridge_init(void)
     if (g_engine) {
         printf("[convai_bridge] already initialized\n");
         return;
+    }
+
+    /* Load the optional runtime config file before building the config JSON:
+     * values in convai.cfg (next to the executable) override the compiled-in
+     * credential defaults. No-op on embedded targets without a filesystem
+     * path to the executable (ws63 stub always fails silently). */
+    if (convai_config_file_init() == 0) {
+        printf("[convai_bridge] runtime config loaded from convai.cfg\n");
     }
 
     /* Platform init must be done by the app layer before calling this — bridge

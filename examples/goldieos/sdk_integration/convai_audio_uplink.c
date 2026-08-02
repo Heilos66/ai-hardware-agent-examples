@@ -7,6 +7,7 @@
  */
 #include "convai_audio_internal.h"
 #include "convai_audio_dump.h"
+#include "convai_codec_g711a.h"
 #include "audio_service.h"
 #include "goldie_osal.h"
 
@@ -65,6 +66,8 @@ static int audio_record_thread(void *arg)
     while (s->running) {
         int len = audio->audio_read(buf, AUDIO_RECORD_BUF_SIZE);
         if (len > 0) {
+            /* Write mono PCM to debug dump file (desktop only) */
+            bridge_dump_write(buf, (size_t)len);
             /*
              * GoldieOS audio hardware provides stereo interleaved PCM (L/R).
              * We need planar format [L0, L1, ...] [R0, R1, ...] for cloud AEC.
@@ -80,11 +83,12 @@ static int audio_record_thread(void *arg)
                 /* Left channel = mic data */
                 planar_samples[i] = samples[i * 2];
                 /* Right channel = silent (zero) for cloud AEC */
+#ifdef PLATFORM_TYPE_WS63
                 planar_samples[frame_count + i] = samples[i * 2 + 1];
+#else
+                planar_samples[frame_count + i] = 0;
+#endif
             }
-
-            /* Write mono PCM to debug dump file (desktop only) */
-            bridge_dump_write(planar_buf, (size_t)len);
 
             /* Encode planar stereo PCM → G.711A before sending to SDK */
             size_t  g711_len = 0;

@@ -149,11 +149,18 @@ static int get_exe_dir(char *buf, size_t size)
 /**
  * Parse a single line for key=value pairs.
  * Supports space-separated and newline-separated entries.
+ * Lines whose first non-blank character is '#' or ';' are comments.
  * Parses in-place (modifies the input buffer).
  */
 static int parse_config_line(char *line)
 {
     char *p = line;
+
+    /* skip full-line comments and blank lines */
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == ';' || *p == '\0' || *p == '\r' || *p == '\n') {
+        return 0;
+    }
 
     while (*p != '\0') {
         /* skip whitespace between tokens */

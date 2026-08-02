@@ -1,4 +1,5 @@
 /* ---------- main.c ---------- */
+#include <stdio.h>
 #include "goldie_osal.h"
 #include "service_manager.h"
 #include "convai_bridge.h"
@@ -271,13 +272,16 @@ static int sys_init_Task(void *param){
         }
     }
 #elif defined(PLATFORM_TYPE_WIN)
-    /* Desktop simulator (goldieos): no hardware platform adapter needed
-     * (the SDK falls back to stubs), use a fixed device name. */
+    /* Desktop simulator (goldieos): register the Windows platform adapter
+     * (winsock NetAL + mbedTLS TLSAL + goldie_osal OSAL from libwinvm),
+     * use a fixed device name. */
+    extern int convai_platform_win_init(void);
+    convai_platform_win_init();
     convai_bridge_set_device_name("goldieos-sim");
 #endif
 
     convai_bridge_init();
-    convai_bridge_set_audio_source(audio_service, 8000, 1, 16);
+    convai_bridge_set_audio_source(audio_service, 8000, 2, 16);
 
 	#ifdef SUPPORT_BATTERY
 		#ifdef DRV_CORE
