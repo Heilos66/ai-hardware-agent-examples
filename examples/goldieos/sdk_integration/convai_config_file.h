@@ -23,29 +23,10 @@
 extern "C" {
 #endif
 
-/* ---- config value getters ---- */
-
-/** Get auth_type string, or NULL if not set. */
-const char *convai_config_file_get_auth_type(void);
-
-/** Get product_id string, or NULL if not set. */
-const char *convai_config_file_get_product_id(void);
-
-/** Get product_key string, or NULL if not set. */
-const char *convai_config_file_get_product_key(void);
-
-/** Get product_secret string, or NULL if not set. */
-const char *convai_config_file_get_product_secret(void);
-
-/** Get device_name string, or NULL if not set. */
-const char *convai_config_file_get_device_name(void);
-
-/** Get agent_id string, or NULL if not set. */
-const char *convai_config_file_get_agent_id(void);
+/* ---- config value getter ---- */
 
 /**
  * Get a raw config value by key, or NULL if not found.
- * Used for custom / future keys not covered by the typed getters above.
  */
 const char *convai_config_file_get(const char *key);
 

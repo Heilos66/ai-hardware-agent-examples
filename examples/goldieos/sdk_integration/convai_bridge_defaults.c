@@ -59,6 +59,8 @@ const char *bridge_get_default_startup_config(void)
  * Device name priority: device_name param (e.g. WiFi MAC from app layer) >
  * hardcoded default. Config file "device_name" is intentionally NOT supported
  * to avoid ambiguity (the device ID should be unique+automatic, or default).
+ * Server URL: only included when "server_url" is set in convai.cfg;
+ * if absent the field is omitted entirely (no hardcoded fallback).
  */
 const char *bridge_build_config_json(char *buf, size_t buf_size,
                                      const char *device_name)
@@ -66,6 +68,8 @@ const char *bridge_build_config_json(char *buf, size_t buf_size,
     if (device_name == NULL || device_name[0] == '\0') {
         device_name = BRIDGE_DEFAULT_DEVICE_NAME;
     }
+
+    const char *server_url = cfg_or("server_url", NULL);
 
     int n = snprintf(buf, buf_size,
         "{"
@@ -75,18 +79,24 @@ const char *bridge_build_config_json(char *buf, size_t buf_size,
                 "\"product_secret\":\"%s\","
                 "\"device_name\":\"%s\""
             "},"
-            "\"ws\":{"
-                "\"audio\":{"
-                    "\"codec\":%d"
-                "}"
-            "}"
-        "}",
+            "\"ws\":{",
         cfg_or("product_id",      BRIDGE_DEFAULT_PRODUCT_ID),
         cfg_or("product_key",     BRIDGE_DEFAULT_PRODUCT_KEY),
         cfg_or("product_secret",  BRIDGE_DEFAULT_PRODUCT_SECRET),
-        device_name,
-        0
+        device_name
     );
+
+    if (server_url != NULL) {
+        n += snprintf(buf + n, buf_size - n,
+            "\"url\":\"%s\",", server_url);
+    }
+
+    n += snprintf(buf + n, buf_size - n,
+            "\"audio\":{"
+                "\"codec\":%d"
+            "}"
+        "}"
+    "}", 0);
     (void)n; /* truncation is acceptable — engine will reject malformed JSON */
     return buf;
 }

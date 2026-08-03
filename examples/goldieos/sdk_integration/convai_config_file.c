@@ -28,13 +28,6 @@ const char *convai_config_file_get(const char *key)
     return NULL;
 }
 
-const char *convai_config_file_get_auth_type(void)      { return NULL; }
-const char *convai_config_file_get_product_id(void)     { return NULL; }
-const char *convai_config_file_get_product_key(void)    { return NULL; }
-const char *convai_config_file_get_product_secret(void) { return NULL; }
-const char *convai_config_file_get_device_name(void)    { return NULL; }
-const char *convai_config_file_get_agent_id(void)       { return NULL; }
-
 int convai_config_file_init_path(const char *path)
 {
     (void)path;
@@ -218,36 +211,6 @@ const char *convai_config_file_get(const char *key)
         }
     }
     return NULL;
-}
-
-const char *convai_config_file_get_auth_type(void)
-{
-    return convai_config_file_get("auth_type");
-}
-
-const char *convai_config_file_get_product_id(void)
-{
-    return convai_config_file_get("product_id");
-}
-
-const char *convai_config_file_get_product_key(void)
-{
-    return convai_config_file_get("product_key");
-}
-
-const char *convai_config_file_get_product_secret(void)
-{
-    return convai_config_file_get("product_secret");
-}
-
-const char *convai_config_file_get_device_name(void)
-{
-    return convai_config_file_get("device_name");
-}
-
-const char *convai_config_file_get_agent_id(void)
-{
-    return convai_config_file_get("agent_id");
 }
 
 int convai_config_file_init_path(const char *path)
