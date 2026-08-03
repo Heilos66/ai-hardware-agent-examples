@@ -45,7 +45,7 @@ static const char *cfg_or(const char *key, const char *fallback)
 
 const char *bridge_get_default_agent_id(void)
 {
-    return BRIDGE_DEFAULT_BOT_ID;
+    return cfg_or("agent_id", BRIDGE_DEFAULT_BOT_ID);
 }
 
 const char *bridge_get_default_startup_config(void)
