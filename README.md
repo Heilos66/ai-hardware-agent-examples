@@ -393,7 +393,7 @@ examples/goldieos/tools/burn/hisi/BurnTool_5.0.39/BurnTool/BurnTool.exe
 ```powershell
 mkdir build_win
 cd build_win
-cmake .. -G "MinGW Makefiles" -DCONVAI_PLATFORM=win -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER_WORKS=1 -DCMAKE_CXX_COMPILER_WORKS=1 -DCMAKE_MAKE_PROGRAM=mingw32-make
+cmake .. -G "MinGW Makefiles" -DCONVAI_PLATFORM=goldieos -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER_WORKS=1 -DCMAKE_CXX_COMPILER_WORKS=1 -DCMAKE_MAKE_PROGRAM=mingw32-make
 mingw32-make
 ```
 

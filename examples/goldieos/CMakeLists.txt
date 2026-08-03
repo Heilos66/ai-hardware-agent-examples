@@ -3,7 +3,7 @@
 #
 #  CONVAI_PLATFORM=ws63 : HiSilicon WS63 firmware (RISC-V 32-bit + FPU,
 #                         LiteOS, lwIP). Outputs goldieos.fwpkg for flashing.
-#  CONVAI_PLATFORM=win  : Windows simulator (native MinGW gcc/g++).
+#  CONVAI_PLATFORM=goldieos  : Windows simulator (native MinGW gcc/g++).
 #                         Outputs goldieos.exe, runs directly on PC.
 # ====================================================================
 
@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.10)
 #         -DCMAKE_CXX_COMPILER=riscv32-linux-musl-g++ \
 #         -DCMAKE_C_COMPILER_WORKS=1 -DCMAKE_CXX_COMPILER_WORKS=1 \
 #         -DCMAKE_MAKE_PROGRAM=make ..
-#   cmake -G "MinGW Makefiles" -DCONVAI_PLATFORM=win \
+#   cmake -G "MinGW Makefiles" -DCONVAI_PLATFORM=goldieos \
 #         -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
 #         -DCMAKE_C_COMPILER_WORKS=1 -DCMAKE_CXX_COMPILER_WORKS=1 \
 #         -DCMAKE_MAKE_PROGRAM=mingw32-make ..
@@ -126,7 +126,7 @@ if(EXISTS ${OPUS_DIR}/CMakeLists.txt)
         set(OPUS_DRED OFF CACHE BOOL "Disable DRED" FORCE)
         set(OPUS_OSCE OFF CACHE BOOL "Disable OSCE" FORCE)
         set(OPUS_FORTIFY_SOURCE OFF CACHE BOOL "Disable fortify" FORCE)
-    elseif(CONVAI_PLATFORM STREQUAL "win")
+    elseif(CONVAI_PLATFORM STREQUAL "goldieos")
         set(OPUS_NONTHREADSAFE_PSEUDOSTACK ON CACHE BOOL "Enable pseudostack" FORCE)
         set(OPUS_CUSTOM_API ON CACHE BOOL "Enable custom API" FORCE)
         set(OPUS_X86_MAY_HAVE_SSE     OFF CACHE BOOL "Disable SSE" FORCE)
@@ -300,7 +300,7 @@ if(CONVAI_PLATFORM STREQUAL "ws63")
 # ====================================================================
 #  WIN — Windows simulator (native MinGW build)
 # ====================================================================
-elseif(CONVAI_PLATFORM STREQUAL "win")
+elseif(CONVAI_PLATFORM STREQUAL "goldieos")
 
     # -- Platform-specific include dirs --
     set(WIN_INCLUDE_DIRS
