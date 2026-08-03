@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(ai_hardware_agent_examples VERSION 0.1.0 LANGUAGES C CXX)
+project(ai_hardware_agent_examples VERSION 26.8.0 LANGUAGES C CXX)
 
 # ====================================================================
 #  Global settings
@@ -40,8 +40,10 @@ if(CONVAI_PLATFORM STREQUAL "ws63")
         -nostdlib -pipe
         -fno-tree-scev-cprop
         -mpush-pop -msmall-data-limit=0 -fno-ipa-ra
-        -g
     )
+    if(EXISTS ${CMAKE_SOURCE_DIR}/src/CMakeLists.txt)
+        add_subdirectory(src)
+    endif()
     add_subdirectory(examples/goldieos)
 elseif(CONVAI_PLATFORM STREQUAL "goldieos")
     # ---- Windows simulator (native MinGW gcc/g++) ----
@@ -51,8 +53,12 @@ elseif(CONVAI_PLATFORM STREQUAL "goldieos")
     #         -DCMAKE_C_COMPILER_WORKS=1 -DCMAKE_CXX_COMPILER_WORKS=1 \
     #         -DCMAKE_MAKE_PROGRAM=mingw32-make ..
     message(STATUS "CONVAI_PLATFORM=goldieos: building Windows simulator (goldieos.exe)")
+    if(EXISTS ${CMAKE_SOURCE_DIR}/src/CMakeLists.txt)
+        add_subdirectory(src)
+    endif()
     add_subdirectory(examples/goldieos)
 else()
-    message(STATUS "CONVAI_PLATFORM not set or unsupported: '${CONVAI_PLATFORM}'. Supported platforms: ws63, goldieos")
+    message(STATUS "CONVAI_PLATFORM not set or unsupported: '${CONVAI_PLATFORM}'. Supported platforms: ws63, win")
 endif()
+
 

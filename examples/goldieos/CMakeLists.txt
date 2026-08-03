@@ -225,11 +225,24 @@ if(CONVAI_PLATFORM STREQUAL "ws63")
         -nostdlib
     )
 
-    # -- Precompiled SDK library --
-    add_library(convai_sdk STATIC IMPORTED)
-    set_target_properties(convai_sdk PROPERTIES
-        IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/libs/ws63/libconvai_sdk.a
-    )
+    # -- SDK library: source-built (this repo) or prebuilt (donor layout) --
+    # Source build creates the convai_sdk target via add_subdirectory(src) in the
+    # root CMakeLists (present only when src/ exists); otherwise fall back to the
+    # prebuilt archive. Auto-detected — no flag needed.
+    if(NOT TARGET convai_sdk)
+        if(NOT EXISTS ${CMAKE_SOURCE_DIR}/libs/ws63/libconvai_sdk.a)
+            message(FATAL_ERROR
+                "未找到 WS63 版 convai_sdk 库: ${CMAKE_SOURCE_DIR}/libs/ws63/libconvai_sdk.a\n"
+                "源码构建需存在 src/CMakeLists.txt；预编译方式请将该 .a 放入 libs/ws63/。")
+        endif()
+        add_library(convai_sdk STATIC IMPORTED)
+        set_target_properties(convai_sdk PROPERTIES
+            IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/libs/ws63/libconvai_sdk.a
+        )
+        message(STATUS "WS63: 使用预编译 convai_sdk: ${WIN_SDK_LIB}")
+    else()
+        message(STATUS "WS63: 使用源码构建 convai_sdk")
+    endif()
 
     # -- Library target --
     add_library(goldieos_ws63 STATIC
@@ -278,7 +291,8 @@ if(CONVAI_PLATFORM STREQUAL "ws63")
 
     set(WS63_LIB_GOLDIEOS "libgoldieos_ws63.a")
     set(WS63_LIB_OPUS     "opus_build/libopus.a")
-    set(WS63_LIB_SDK      "${CMAKE_SOURCE_DIR}/libs/ws63/libconvai_sdk.a")
+    # Resolves to the built archive (source mode) or IMPORTED_LOCATION (prebuilt).
+    set(WS63_LIB_SDK      "$<TARGET_FILE:convai_sdk>")
 
     add_custom_command(
         OUTPUT ${OUTPUT_BIN} ${OUTPUT_ELF}
@@ -316,18 +330,25 @@ elseif(CONVAI_PLATFORM STREQUAL "goldieos")
     # cJSON: WS63 gets it from the board prebuilt lib; WIN compiles from source
     file(GLOB WIN_CJSON_SRC third_party/cjson/*.c)
 
-    # -- Precompiled SDK library (Windows MinGW) --
-    set(WIN_SDK_LIB ${CMAKE_SOURCE_DIR}/libs/win/libconvai_sdk.a)
-    if(NOT EXISTS ${WIN_SDK_LIB})
-        message(FATAL_ERROR
-            "未找到 Windows 版 convai_sdk 库: ${WIN_SDK_LIB}\n"
-            "请获取 Windows MinGW 版 libconvai_sdk.a 并放入 libs/win/ 目录后重新配置。")
+    # -- SDK library: source-built (this repo) or prebuilt (donor layout) --
+    # Source build creates the convai_sdk target via add_subdirectory(src) in the
+    # root CMakeLists (present only when src/ exists); otherwise fall back to the
+    # prebuilt archive. Auto-detected — no flag needed.
+    if(NOT TARGET convai_sdk)
+        set(WIN_SDK_LIB ${CMAKE_SOURCE_DIR}/libs/win/libconvai_sdk.a)
+        if(NOT EXISTS ${WIN_SDK_LIB})
+            message(FATAL_ERROR
+                "未找到 Windows 版 convai_sdk 库: ${WIN_SDK_LIB}\n"
+                "源码构建需存在 src/CMakeLists.txt；预编译方式请获取 Windows MinGW 版 libconvai_sdk.a 并放入 libs/win/。")
+        endif()
+        add_library(convai_sdk STATIC IMPORTED)
+        set_target_properties(convai_sdk PROPERTIES
+            IMPORTED_LOCATION ${WIN_SDK_LIB}
+        )
+        message(STATUS "WIN: 使用预编译 convai_sdk: ${WIN_SDK_LIB}")
+    else()
+        message(STATUS "WIN: 使用源码构建 convai_sdk")
     endif()
-    add_library(convai_sdk STATIC IMPORTED)
-    set_target_properties(convai_sdk PROPERTIES
-        IMPORTED_LOCATION ${WIN_SDK_LIB}
-    )
-    message(STATUS "WIN: 使用 convai_sdk: ${WIN_SDK_LIB}")
 
     # -- WIN prebuilt libraries --
     set(WIN10_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/win10)
